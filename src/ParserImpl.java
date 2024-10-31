@@ -23,6 +23,9 @@ public class ParserImpl
         // 2. assign the root, whose type is ParseTree.Program, to parsetree_program
         ArrayList<ParseTree.FuncDecl> decllist = (ArrayList<ParseTree.FuncDecl>)s1;
         parsetree_program = new ParseTree.Program(decllist);
+        ParseTreeInfo.FuncDeclInfo fdi = (ParseTreeInfo.FuncDeclInfo) env.Get("main");
+        if(fdi==null||!fdi.type.equals(Type.NUM+"()")||fdi.numArgs!=0)
+            throw new SemanticException("The program must have one main function that returns num value and has no parameters.");
         return parsetree_program;
     }
 
@@ -91,25 +94,39 @@ public class ParserImpl
     Object fundecl____FUNC_IDENT_TYPEOF_typespec_LPAREN_params_RPAREN_BEGIN_localdecls_10X_stmtlist_END(Object s1, Object s2, Object s3, Object s4, Object s5, Object s6, Object s7, Object s8, Object s9) throws IdentifierDefinedException {
         Token ident = (Token) s2;
         ParseTree.TypeSpec typeSpec = (ParseTree.TypeSpec) s4;
+        ArrayList<ParseTree.Param> params = (ArrayList<ParseTree.Param>) s6;
+        ArrayList<ParseTree.LocalDecl> localDecls = (ArrayList<ParseTree.LocalDecl>) s9;
         if(env.m.containsKey(ident.lexeme))
             throw new IdentifierDefinedException(ident);
-        env.Put(ident.lexeme, funcType(typeSpec.typename));
+
+        ParseTreeInfo.FuncDeclInfo funcDeclInfo = new ParseTreeInfo.FuncDeclInfo();
+        funcDeclInfo.type = funcType(typeSpec.typename);
+        funcDeclInfo.id = ident.lexeme;
+        funcDeclInfo.numArgs = params.size();
+
+        env.Put(ident.lexeme, funcDeclInfo);
         ////////////////////////////////////////////////
         env = new Env(env);
         env.funcId = ident.lexeme;
         env.hasRet = false;
         //////////////////////////////////////////////////
-        ArrayList<ParseTree.Param> params = (ArrayList<ParseTree.Param>) s6;
+        int sillyCounter = 1;
         for(ParseTree.Param param:params){
             if(env.m.containsKey(param.info.id))
                 throw new IdentifierDefinedException(param.info);
-            env.Put(param.info.id, param.info.type);
+            env.Put(param.info.id, param.info);
+            param.reladdr = -sillyCounter;
+            param.info.addr = -sillyCounter;
+            sillyCounter++;
         }
-        ArrayList<ParseTree.LocalDecl> localDecls = (ArrayList<ParseTree.LocalDecl>) s9;
+        sillyCounter = 1;
         for(ParseTree.LocalDecl localDecl:localDecls){
             if(env.m.containsKey(localDecl.info.id))
                 throw new IdentifierDefinedException(localDecl.info);
-            env.Put(localDecl.info.id, localDecl.info.type);
+            env.Put(localDecl.info.id, localDecl.info);
+            localDecl.reladdr = sillyCounter;
+            localDecl.info.addr = sillyCounter;
+            sillyCounter++;
         }
 
         return null;
@@ -124,7 +141,8 @@ public class ParserImpl
         if(!env.hasRet)
             throw new SemanticException(ident, String.format("Function %s() should return at least one value.", env.funcId));
         env = env.prev;
-        return new ParseTree.FuncDecl(ident.lexeme, rettype, params, localDecls, stmts);
+        ParseTree.FuncDecl funcDecl = new ParseTree.FuncDecl(ident.lexeme, rettype, params, localDecls, stmts);
+        return funcDecl;
     }
 
     Object params____eps() throws Exception 
@@ -166,11 +184,11 @@ public class ParserImpl
         Token          id     = (Token         )s1;
         Token          assign = (Token         )s2;
         ParseTree.Expr expr   = (ParseTree.Expr)s3;
-        String type = (String) env.Get(id.lexeme);
-        if(type==null){
+        ParseTreeInfo pti = (ParseTreeInfo) env.Get(id.lexeme);
+        if(pti==null){
             throw new VariableNotDefinedException(id);
-        } else if (!type.equals(expr.info.type)) {
-            throw new VariableTypeException(id, type, expr.info.type);
+        } else if (!pti.type.equals(expr.info.type)) {
+            throw new VariableTypeException(id, pti.type, expr.info.type);
         }
 
 
@@ -192,7 +210,7 @@ public class ParserImpl
 //            }
 //        }
         ParseTree.AssignStmt stmt = new ParseTree.AssignStmt(id.lexeme, expr);
-        stmt.ident_reladdr = 1;
+        stmt.ident_reladdr = pti.addr;
         return stmt;
     }
     Object returnstmt____RETURN_expr_SEMI(Object s1, Object s2, Object s3) throws Exception
@@ -201,8 +219,9 @@ public class ParserImpl
         // 2. etc.
         // 3. create and return node
         ParseTree.Expr expr = (ParseTree.Expr)s2;
-        if(!expr.info.type.equals(unFuncType((String)env.Get(env.funcId))))
-            throw new SemanticException(expr.info.lineno, expr.info.column, String.format("Function %s() should return %s value, instead of %s value.", env.funcId, unFuncType((String)env.Get(env.funcId)), expr.info.type)) ;
+        String funcRetType = unFuncType(((ParseTreeInfo)env.Get(env.funcId)).type);
+        if(!expr.info.type.equals(funcRetType))
+            throw new SemanticException(expr.info.lineno, expr.info.column, String.format("Function %s() should return %s value, instead of %s value.", env.funcId, funcRetType, expr.info.type)) ;
         env.hasRet=true;
         return new ParseTree.ReturnStmt(expr);
     }
@@ -234,7 +253,8 @@ public class ParserImpl
 //        if(env.m.containsKey(id.lexeme)){
 //            throw new IdentifierDefinedException(localdecl.info);
 //        }
-        localdecl.reladdr = 1;
+//        ParseTreeInfo pti = (ParseTreeInfo) env.Get(id.lexeme);
+//        localdecl.reladdr = 1;
 //        env.Put(id.lexeme, typespec.typename);
         return localdecl;
     }
@@ -301,14 +321,14 @@ public class ParserImpl
         expr.info.lineno = id.lineno;
         expr.info.column = id.column;
         expr.info.id = id.lexeme;
-        String type = (String) env.Get(id.lexeme);
-        if(type==null){
+        ParseTreeInfo pti = (ParseTreeInfo) env.Get(id.lexeme);
+        if(pti==null){
             throw new VariableNotDefinedException(id);
-        } else if (type.equals(Type.FUNC)) {
+        } else if (pti.type.contains("()")) {
             throw new SemanticException(id, String.format("Identifier %s should be non-function type.",id.lexeme));
         }
-        expr.info.type = type;
-        expr.reladdr = 1;
+        expr.info.type = pti.type;
+        expr.reladdr = pti.addr;
         return expr;
     }
     Object expr____IDENT_LPAREN_args_RPAREN(Object s1, Object s2, Object s3, Object s4) throws Exception
@@ -333,12 +353,16 @@ public class ParserImpl
 //            }
 //        }
         ParseTree.ExprFuncCall expr = new ParseTree.ExprFuncCall(id.lexeme, args);
-        String funcType = (String) env.Get(id.lexeme);
+        ParseTreeInfo pti = (ParseTreeInfo) env.Get(id.lexeme);
         expr.info.id = id.lexeme;
-        if(funcType==null){
+        if(pti==null){
             throw new FunctionNotDefinedException(id);
+        } else if (!pti.type.contains("()")) {
+            throw new SemanticException(id, String.format("Identifier %s should be function.", id.lexeme));
+        } else if (((ParseTreeInfo.FuncDeclInfo) pti).numArgs != args.size()){
+            throw new SemanticException(id, String.format("Function %s() should be called with the correct number of arguments.", id.lexeme));
         }
-        expr.info.type=unFuncType(funcType);
+        expr.info.type=unFuncType(pti.type);
         return expr;
     }
     Object expr____NUMLIT(Object s1) throws Exception
@@ -383,6 +407,8 @@ public class ParserImpl
         ParseTree.Param param = new ParseTree.Param(ident.lexeme, typeSpec);
         param.info.id = ident.lexeme;
         param.info.type = typeSpec.typename;
+        param.info.lineno = ident.lineno;
+        param.info.column = ident.column;
         return param;
     }
 
@@ -391,7 +417,7 @@ public class ParserImpl
         ParseTree.TypeSpec type = (ParseTree.TypeSpec) s1;
         Token lBracket = (Token) s2;
         Token rBracket = (Token) s3;
-        return new ParseTree.TypeSpec(type.typename+"[]");
+        return new ParseTree.TypeSpec(arrType(type.typename));
     }
 
     Object primtype____BOOL(Object s1) throws Exception
@@ -426,10 +452,10 @@ public class ParserImpl
     Object assignstmt____IDENT_LBRACKET_expr_RBRACKET_ASSIGN_expr_SEMI(Object s1, Object s2, Object s3, Object s4, Object s5, Object s6, Object s7) throws Exception
     {
         Token ident = (Token) s1;
-        String type = (String) env.Get(ident.lexeme);
-        if(type==null)
+        ParseTreeInfo pti = (ParseTreeInfo) env.Get(ident.lexeme);
+        if(pti==null)
             throw new ArrayNotDefinedException(ident);
-        if(!type.contains("[]"))
+        if(!pti.type.contains("[]"))
             throw new IndexNonarrayException(ident);
         Token lBracket = (Token) s2;
         ParseTree.Expr expr1 = (ParseTree.Expr) s3;
@@ -439,11 +465,13 @@ public class ParserImpl
         Token rBracket = (Token) s4;
         Token assign = (Token) s5;
         ParseTree.Expr expr2 = (ParseTree.Expr) s6;
-        String arrType = unArrType((String)env.Get(ident.lexeme));
+        String arrType = unArrType(((ParseTreeInfo)env.Get(ident.lexeme)).type);
         if(!expr2.info.type.equals(arrType))
             throw new ArrayElementTypeException(ident, arrType, expr2.info.type);
         Token semi = (Token) s7;
-        return new ParseTree.AssignStmtForArray(ident.lexeme, expr1, expr2);
+        ParseTree.AssignStmtForArray asfa = new ParseTree.AssignStmtForArray(ident.lexeme, expr1, expr2);
+        asfa.ident_reladdr=pti.addr;
+        return asfa;
     }
 
     Object printstmt____PRINT_expr_SEMI(Object s1, Object s2, Object s3) throws Exception
@@ -497,7 +525,8 @@ public class ParserImpl
         for(ParseTree.LocalDecl localDecl:localDecls){
             if(env.m.containsKey(localDecl.info.id))
                 throw new IdentifierDefinedException(localDecl.info);
-            env.Put(localDecl.info.id, localDecl.info.type);
+            env.Put(localDecl.info.id, localDecl.info);
+            localDecl.reladdr = localDecl.info.addr;
         }
 
         return null;
@@ -761,17 +790,17 @@ public class ParserImpl
         ParseTree.Expr expr = (ParseTree.Expr) s4;
         Token rBracket = (Token) s5;
         ParseTree.ExprNewArray ena = new ParseTree.ExprNewArray(type, expr);
-        ena.info.type = type.typename + "[]";
+        ena.info.type = arrType(type.typename);
         return ena;
     }
 
     Object expr____IDENT_LBRACKET_expr_RBRACKET(Object s1, Object s2, Object s3, Object s4) throws Exception
     {
         Token ident = (Token) s1;
-        String type = (String) env.Get(ident.lexeme);
-        if(type==null)
+        ParseTreeInfo pti = (ParseTreeInfo) env.Get(ident.lexeme);
+        if(pti==null)
             throw new ArrayNotDefinedException(ident);
-        if(!type.contains("[]"))
+        if(!pti.type.contains("[]"))
             throw new IndexNonarrayException(ident);
         Token lBracket = (Token) s2;
         ParseTree.Expr expr = (ParseTree.Expr) s3;
@@ -781,7 +810,8 @@ public class ParserImpl
 //        System.out.println(String.format("%s[%s]", ident.lexeme,expr.info.type));
         Token rBracket = (Token) s4;
         ParseTree.ExprArrayElem eae = new ParseTree.ExprArrayElem(ident.lexeme, expr);
-        eae.info.type = unArrType(type);
+        eae.info.type = unArrType(pti.type);
+        eae.reladdr= pti.addr;
         return eae;
     }
 
@@ -790,10 +820,17 @@ public class ParserImpl
         Token ident = (Token) s1;
         Token dot = (Token) s2;
         Token size = (Token) s3;
-        return new ParseTree.ExprArraySize(ident.lexeme);
+        ParseTree.ExprArraySize eas = new ParseTree.ExprArraySize(ident.lexeme);
+        eas.info.type = Type.NUM;
+        eas.reladdr = 1;
+        return eas;
     }
 
     public static class SemanticException extends Exception{
+        public SemanticException(String message) {
+            super(message);
+        }
+
         public SemanticException(int lineno, int column, String error){
             super(String.format("[Error at %s:%s] %s",lineno,column,error));
         }
@@ -873,7 +910,6 @@ public class ParserImpl
     public static class Type {
         public final static String NUM = "num";
         public final static String BOOL = "bool";
-        public final static String FUNC = "func";
     }
     private String arrType(String type){
         return type+"[]";
